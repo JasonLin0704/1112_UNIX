@@ -18,8 +18,9 @@ static void get_base() {
 	char buf[16384], *s = buf, *line, *saveptr;
 	if(poem_max != 0) return;
 	if((fd = open("/proc/self/maps", O_RDONLY)) < 0) errquit("get_base/open");
-	if((sz = read(fd, buf, sizeof(buf)-1)) < 0) errquit("get_base/read");
-	buf[sz] = 0;
+    while((sz = read(fd, s, sizeof(buf)-1-(s-buf))) > 0) { s += sz; }
+    *s = 0;
+    s = buf;
 	close(fd);
 	while((line = strtok_r(s, "\n\r", &saveptr)) != NULL) { s = NULL;
 		if(strstr(line, " r-xp ") == NULL) continue;
