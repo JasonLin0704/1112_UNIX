@@ -19,14 +19,15 @@
 typedef int (*printf_ptr_t)(const char *fmt, ...);
 typedef void (*solver_t)(printf_ptr_t);
 
-int os_urandom() {
+int
+os_urandom() {
 	int v;
 	if(getrandom(&v, sizeof(v), 0) < 0) errquit("getrandom");
 	return v;
 }
 
-/*
-int sandbox() {
+int
+sandbox() {
 	scmp_filter_ctx ctx;
 	if(getenv("NO_SANDBOX") != NULL) return 0;
 	if((ctx = seccomp_init(SCMP_ACT_KILL)) == NULL) errquit("seccomp_init");
@@ -39,9 +40,10 @@ int sandbox() {
 	if(seccomp_load(ctx) < 0) errquit("seccomp_load");
 	seccomp_release(ctx);
 	return 0;
-}*/
+}
 
-int guess() {
+int
+guess() {
 	char buf[16];
 	int val, sz;
 	printf("Show me your answer? ");
@@ -51,7 +53,8 @@ int guess() {
 	return strtol(buf, NULL, 0);
 }
 
-int main() {
+int
+main() {
 	pid_t pid;
 	int e, bytes, nread, magic = 0x12345678;
 	char buf[64];
@@ -61,13 +64,11 @@ int main() {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	//Q1
 	printf("How many bytes of the solver executable do you want to send to me? ");
 	if(fgets(buf, sizeof(buf), stdin) == NULL) errquit("read");
 	if(sscanf(buf, "%d", &bytes) != 1) errquit("sscanf");
 
 	if(bytes > 0) {
-		//Q2
 		printf("What relative address in the executable do you want to call? ");
 		if(fgets(buf, sizeof(buf), stdin) == NULL) errquit("read");
 		if(sscanf(buf, "%d", &magic) != 1) errquit("sscanf");
@@ -78,7 +79,6 @@ int main() {
 					MAP_PRIVATE|MAP_ANON, -1, 0)) == NULL)
 			errquit("mmap");
 
-		//Q3
 		printf("Send me your code (%d bytes): ", bytes);
 		nread = 0;
 		while(nread != bytes) {
@@ -88,9 +88,9 @@ int main() {
 		}
 		printf("** code: %d byte(s) received.\n", nread);
 
-		//Child process
 		if((pid = fork()) < 0) errquit("fork");
-		if(pid == 0) { 
+		if(pid == 0) {
+			sandbox();
 			fptr += magic;
 			fptr(printf);
 			printf("** Function evaluation done.\n");
@@ -107,7 +107,7 @@ int main() {
 		if((e = open("/FLAG", O_RDONLY)) < 0) errquit("open");
 		while(read(e, buf, 1) == 1) {
 			if(magic != nread) {
-				printf("** Unexpected solution, please fix it!\n");
+				printf("** Unexpected solution, please fixit!\n");
 				break;
 			}
 			write(1, buf, 1);

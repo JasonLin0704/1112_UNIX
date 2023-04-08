@@ -3,9 +3,10 @@
 typedef int (*printf_ptr_t)(const char *format, ...);
 
 void solver(printf_ptr_t fptr) {
-	char msg[16] = "hello, world!";
-	fptr("%s\n", msg);
-	fptr("AAAAAAAA\n");
+	char msg[8];
+	fptr("canary=%016lx\n", *(unsigned long *)&msg[8]);
+	fptr("rbp=%016lx\n", *(unsigned long *)&msg[16]);
+	fptr("return address=%016lx\n", *(unsigned long *)&msg[24]);
 }
 
 int main() {
