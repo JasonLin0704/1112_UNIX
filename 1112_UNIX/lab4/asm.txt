@@ -1,0 +1,18 @@
+enter  0x20,0
+mov    QWORD PTR [rbp-0x18],rdi
+mov    rax,QWORD PTR fs:0x28
+mov    QWORD PTR [rbp-0x8],rax
+movabs rax,0xa786c25786c25
+mov    QWORD PTR [rbp-0x10],rax
+lea    rax,[rbp-0x10+0x10]
+mov    rdx,QWORD PTR [rax]
+lea    rax,[rbp-0x10+0x8]
+mov    rsi,QWORD PTR [rax]
+lea    rdi,[rbp-0x10]
+call   QWORD PTR [rbp-0x18]
+lea    rax,[rbp-0x10+0x18]
+mov    rsi,QWORD PTR [rax]
+lea    rdi,[rbp-0x10]
+call   QWORD PTR [rbp-0x18]
+leave
+ret
