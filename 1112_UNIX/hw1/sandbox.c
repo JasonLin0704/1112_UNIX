@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -13,6 +15,10 @@
 
 int LOGGER_FD;
 char *CONFIG;
+
+typedef int (*open_ptr_t)(const char *, int, mode_t);
+open_ptr_t real_open;
+
 
 uint64_t got_addr_open = 0;
 uint64_t got_addr_read = 0;
@@ -33,6 +39,7 @@ void hijack(int argc, char * * ubp_av);
 void modify_got(uint64_t addr, uint64_t target);
 int fake_open(const char *pathname, int flags, mode_t mode);
 ssize_t fake_read(int fd, void *buf, size_t count);
+ssize_t fake_write(int fd, const void *buf, size_t count);
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
 int __libc_start_main(int *(main) (int, char * *, char * *),
@@ -121,7 +128,7 @@ void hijack(int argc, char * * ubp_av){
         char sym_name[32];
         fseek(file, shdr_dynstr.sh_offset + sym.st_name, SEEK_SET);
         fread(sym_name, sizeof(char), 32, file);
-        printf("0x%lx %u %s\n", offset, sym_idx, sym_name);
+        //printf("0x%lx %u %s\n", offset, sym_idx, sym_name);
 
         uint64_t addr = base + offset;
         int PageSize = sysconf(_SC_PAGE_SIZE);
@@ -130,13 +137,16 @@ void hijack(int argc, char * * ubp_av){
         if(strcmp(sym_name, "open") == 0){
             got_addr_open = addr;
             got_val_open = *(uint64_t*)addr;
+            real_open = (open_ptr_t) got_val_open;
             modify_got(addr, (uint64_t)fake_open);
         } else if(strcmp(sym_name, "read") == 0){
             got_addr_read = addr;
             got_val_read = *(uint64_t*)addr;
             modify_got(addr, (uint64_t)fake_read);
         } else if(strcmp(sym_name, "write") == 0){
-            continue;
+            got_addr_write = addr;
+            got_val_write = *(uint64_t*)addr;
+            modify_got(addr, (uint64_t)fake_write);
         } else if(strcmp(sym_name, "connect") == 0){
             got_addr_connect = addr;
             got_val_connect = *(uint64_t*)addr;
@@ -161,7 +171,7 @@ void modify_got(uint64_t addr, uint64_t target){
 
 int fake_open(const char *pathname, int flags, mode_t mode){
     // printf("fake_open\n");
-    
+
     FILE *file = fopen(CONFIG, "r");
     if(!file) errquit("fopen config");
     
@@ -174,10 +184,23 @@ int fake_open(const char *pathname, int flags, mode_t mode){
         else if(strcmp(contents, "END open-blacklist\n") == 0) break;
         else if(flag == 1){
             contents[strlen(contents) - 1] = '\0';
-            if(strcmp(contents, pathname) == 0){
-                flag = -1;
-                errno = EACCES;
-                break;
+            struct stat buf;
+            int x;
+            char path1[256], path2[256];
+            strcpy(path1, pathname);
+            while(1){
+                printf("%s %s\n", contents, path1);
+                if(strcmp(contents, path1) == 0){
+                    flag = -1;
+                    errno = EACCES;
+                    break;
+                }
+                x = lstat(path1, &buf);
+                if(S_ISLNK(buf.st_mode)){        
+                    if(readlink(path1, path2, sizeof(path2)) == -1) errquit("readlink");
+                    strcpy(path1, path2);
+                }
+                else break;
             }
         }
     }
@@ -185,19 +208,27 @@ int fake_open(const char *pathname, int flags, mode_t mode){
     free(contents);
     if(flag == -1) return -1; 
 
-    modify_got(got_addr_open, got_val_open);
+    //modify_got(got_addr_open, got_val_open);
     if(~(flags & O_CREAT || flags & __O_TMPFILE)) mode = 0;
-    int res = open(pathname, flags, mode);
+    int res = real_open(pathname, flags, mode);
     dprintf(LOGGER_FD, "[logger] open(\"%s\", %d, %u) = %d\n", pathname, flags, mode, res);
     return res;
 }
 
 ssize_t fake_read(int fd, void *buf, size_t count){
-    // printf("fake_read\n");
+    printf("fake_read\n");
     
     FILE *file = fopen(CONFIG, "r");
     if(!file) errquit("fopen config");
     
+    /* Create fd if needed */
+    char filename[32];
+    pid_t pid = getpid();
+    sprintf(filename, "%d-%d-read.log", pid, fd);
+    printf("%s\n", filename);
+    int log_fd = open(filename, O_CREAT, S_IRWXU);
+    
+
     int flag = 0;
 
     char *contents = NULL;
@@ -211,12 +242,27 @@ ssize_t fake_read(int fd, void *buf, size_t count){
         }
     }
     fclose(file);
+    
+    /* check */
+    printf("%s\n", contents);
+
+    free(contents);
 
     modify_got(got_addr_read, got_val_read);
     ssize_t res = read(fd, buf, count);
-    printf("%s\n", (char *)buf);
+    // printf("%s\n", (char *)buf);
     dprintf(LOGGER_FD, "[logger] read(%d, %p, %ld) = %ld\n", fd, buf, count, res);
-    return 0;
+    return res;
+}
+
+ssize_t fake_write(int fd, const void *buf, size_t count){
+    printf("fake_write\n");
+
+    modify_got(got_addr_write, got_val_write);
+    ssize_t res = write(fd, buf, count);
+    // printf("%s\n", (char *)buf);
+    dprintf(LOGGER_FD, "[logger] write(%d, %p, %ld) = %ld\n", fd, buf, count, res);
+    return res;
 }
 
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
@@ -251,3 +297,4 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     printf("res: %d\n", res);
     return res;
 }
+
