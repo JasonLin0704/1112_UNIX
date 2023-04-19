@@ -45,7 +45,8 @@ int __libc_start_main(int *(main) (int, char * *, char * *),
                       void (* stack_end)){
     void *handle = dlopen("/usr/lib/x86_64-linux-gnu/libc-2.31.so", RTLD_LAZY);
     if(!handle) errquit("dlopen");
-    printf("%d\n", getpid());
+
+    printf("pid: %d\n", getpid());
     LOGGER_FD = atoi(getenv("LOGGER_FD"));
     CONFIG = getenv("SANDBOX_CONFIG");
 
@@ -194,60 +195,82 @@ int fake_open(const char *pathname, int flags, mode_t mode){
     if(flag == -1) return -1; 
 
     if(~(flags & O_CREAT || flags & __O_TMPFILE)) mode = 0;
-    int res = real_open(pathname, flags, mode);
-    dprintf(LOGGER_FD, "[logger] open(\"%s\", %d, %u) = %d\n", pathname, flags, mode, res);
-    return res;
+    int ret = real_open(pathname, flags, mode);
+    dprintf(LOGGER_FD, "[logger] open(\"%s\", %d, %u) = %d\n", pathname, flags, mode, ret);
+    return ret;
 }
 
 ssize_t fake_read(int fd, void *buf, size_t count){
     printf("\nfake_read\n");
-    printf("%d\n", getpid());
+
+    /* Get the keyword from the config.txt */
     FILE *file = fopen(CONFIG, "r");
     if(!file) errquit("fopen config");
-    
-    /* Create fd if needed */
-    // char filename[32];
-    // sprintf(filename, "%d-%d-read.log", getpid(), fd);
-    // printf("%s\n", filename);
-    // int log_fd = open(filename, O_CREAT, S_IRWXU);
-    // int visit = 0;
-    // for(int i = 0; i < fd_len; i++) if(fd_list[i] == fd) visit = 1;
-
-    // if(visit == 0){
-
-    // }
-
     int flag = 0;
-
-    char *contents = NULL;
+    char *keyword = NULL;
     size_t len = 0;
-    while (getline(&contents, &len, file) != -1){
-        if(strcmp(contents, "BEGIN read-blacklist\n") == 0) flag = 1;
-        else if(strcmp(contents, "END read-blacklist\n") == 0) break;
+    while (getline(&keyword, &len, file) != -1){
+        if(strcmp(keyword, "BEGIN read-blacklist\n") == 0) flag = 1;
+        else if(strcmp(keyword, "END read-blacklist\n") == 0) break;
         else if(flag == 1){
-            contents[strlen(contents) - 1] = '\0';
+            keyword[strlen(keyword) - 1] = '\0';
             break;
         }
     }
     fclose(file);
+    // printf("%s\n", keyword);
     
-    /* Check */
-    printf("%s\n", contents);
-    printf("%s\n", (char *)buf);
+    int log_fd;
+    char log_content[65536];
+    char filename[32];
+    sprintf(filename, "%d-%d-read.log", getpid(), fd);
     
-    free(contents);
+    /* fd is either closed or not accessible */
+    struct stat buffer;
+    if(fstat(log_fd, &buffer) == -1){ 
+        log_fd = real_open(filename, O_CREAT, S_IRWXU);
+        if(stat(filename, &buffer) == 0){
+            /* set pointer to the tail */
+        }
+    }
+    /* fd is opened now*/
+    else{
+        log_fd = real_open(filename, O_APPEND, S_IRWXU);
+    }
+    int visit = 0;
+    for(int i = 0; i < fd_len; i++) if(fd_list[i] == fd) visit = 1;
+    if(visit == 0){
+        
+        fd_list[fd_len - 1] = log_fd;
+    } 
+    else{
+        
+    }
 
-    ssize_t res = real_read(fd, buf, count);
-    dprintf(LOGGER_FD, "[logger] read(%d, %p, %ld) = %ld\n", fd, buf, count, res);
-    return res;
+    /* Load previous content and do filtering */
+    ssize_t pre = real_read(log_fd, log_content, strlen(log_content) - 1);
+    ssize_t ret = real_read(fd, buf, count);
+    strcat(log_content, buf);
+    printf("log_content:\n %s\n", log_content);
+    if(strstr(log_content, keyword) != NULL){
+        close(fd);
+        errno = EIO;
+        return -1;
+    }
+    else real_write(log_fd, log_content, pre + ret);
+    
+    free(keyword);
+
+    dprintf(LOGGER_FD, "[logger] read(%d, %p, %ld) = %ld\n", fd, buf, count, ret);
+    return ret;
 }
 
 ssize_t fake_write(int fd, const void *buf, size_t count){
     printf("\nfake_write\n");
 
-    ssize_t res = real_write(fd, buf, count);
-    dprintf(LOGGER_FD, "[logger] write(%d, %p, %ld) = %ld\n", fd, buf, count, res);
-    return res;
+    ssize_t ret = real_write(fd, buf, count);
+    dprintf(LOGGER_FD, "[logger] write(%d, %p, %ld) = %ld\n", fd, buf, count, ret);
+    return ret;
 }
 
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
