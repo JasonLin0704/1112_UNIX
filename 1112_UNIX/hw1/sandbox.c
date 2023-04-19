@@ -12,7 +12,7 @@
 #include <sys/socket.h>
 
 #define errquit(m)	{ perror(m); _exit(-1); }
-
+#define max(a, b) ((a)>(b)?(a):(b))
 
 int __libc_start_main(int *(main) (int, char * *, char * *), int argc, char * * ubp_av, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end));
 void hijack(int argc, char * * ubp_av);
@@ -20,22 +20,27 @@ int fake_open(const char *pathname, int flags, mode_t mode);
 ssize_t fake_read(int fd, void *buf, size_t count);
 ssize_t fake_write(int fd, const void *buf, size_t count);
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int fake_close(int fd);
+int find_fd_index(int fd);
 
 typedef int (*open_ptr_t)(const char *, int, mode_t);
 typedef ssize_t (*read_ptr_t)(int, void *, size_t);
 typedef ssize_t (*write_ptr_t)(int, const void *, size_t);
 typedef int (*connect_ptr_t)(int, const struct sockaddr *, socklen_t);
+typedef int (*close_ptr_t)(int);
 
 open_ptr_t real_open;
 read_ptr_t real_read;
 write_ptr_t real_write;
 connect_ptr_t real_connect;
+close_ptr_t real_close;
 
 int LOGGER_FD;
 char *CONFIG;
 
 int fd_len = 0;
 int fd_list[10000];
+int fd_start[10000];
 
 int __libc_start_main(int *(main) (int, char * *, char * *),
                       int argc, char * * ubp_av, 
@@ -150,6 +155,10 @@ void hijack(int argc, char * * ubp_av){
         else if(strcmp(sym_name, "system") == 0){
             continue;
         }
+        else if(strcmp(sym_name, "close") == 0){
+            real_close = (close_ptr_t) *(uint64_t*)addr;
+            *(uint64_t*)addr = (uint64_t)fake_close; 
+        }
     }
     fclose(file);
 }
@@ -159,9 +168,7 @@ int fake_open(const char *pathname, int flags, mode_t mode){
 
     FILE *file = fopen(CONFIG, "r");
     if(!file) errquit("fopen config");
-    
     int flag = 0;
-    
     char *contents = NULL;
     size_t len = 0;
     while (getline(&contents, &len, file) != -1){
@@ -213,51 +220,55 @@ ssize_t fake_read(int fd, void *buf, size_t count){
         if(strcmp(keyword, "BEGIN read-blacklist\n") == 0) flag = 1;
         else if(strcmp(keyword, "END read-blacklist\n") == 0) break;
         else if(flag == 1){
-            keyword[strlen(keyword) - 1] = '\0';
+            keyword[strlen(keyword) - 1] = '\0'; // printf("%s\n", keyword);
             break;
         }
     }
     fclose(file);
-    // printf("%s\n", keyword);
+    
     
     int log_fd;
     char log_content[65536];
     char filename[32];
     sprintf(filename, "%d-%d-read.log", getpid(), fd);
+
+    ssize_t pre, ret;
     
-    /* fd is either closed or not accessible */
-    struct stat buffer;
-    if(fstat(log_fd, &buffer) == -1){ 
-        log_fd = real_open(filename, O_CREAT, S_IRWXU);
-        if(stat(filename, &buffer) == 0){
-            /* set pointer to the tail */
+    /* Log file is already existed */
+    if(access(filename, F_OK) == 0){
+        log_fd = real_open(filename, O_APPEND | O_RDWR, S_IRWXU);
+
+        /* Combine with previous content from log file and do filtering */
+        int index = find_fd_index(log_fd);
+        lseek(log_fd, fd_start[index], SEEK_SET);
+        pre = max(0, real_read(log_fd, log_content, strlen(log_content) - 1));
+        ret = real_read(fd, buf, count);
+        strcat(log_content, buf); // printf("log_content:\n %s\n", log_content);
+        if(strstr(log_content, keyword) != NULL){
+            close(fd);
+            errno = EIO;
+            ret = -1;
+        }
+        else{
+            real_write(log_fd, log_content, pre + ret);
+            real_close(log_fd);
         }
     }
-    /* fd is opened now*/
+    /* Log file isn't existed */                    
     else{
-        log_fd = real_open(filename, O_APPEND, S_IRWXU);
-    }
-    int visit = 0;
-    for(int i = 0; i < fd_len; i++) if(fd_list[i] == fd) visit = 1;
-    if(visit == 0){
-        
-        fd_list[fd_len - 1] = log_fd;
+        ret = real_read(fd, buf, count);
+        strcat(log_content, buf); 
+        if(strstr(log_content, keyword) != NULL){
+            close(fd);
+            errno = EIO;
+            ret = -1;
+        }
+        else{
+            log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU);
+            real_write(log_fd, log_content, ret);
+            real_close(log_fd);
+        }
     } 
-    else{
-        
-    }
-
-    /* Load previous content and do filtering */
-    ssize_t pre = real_read(log_fd, log_content, strlen(log_content) - 1);
-    ssize_t ret = real_read(fd, buf, count);
-    strcat(log_content, buf);
-    printf("log_content:\n %s\n", log_content);
-    if(strstr(log_content, keyword) != NULL){
-        close(fd);
-        errno = EIO;
-        return -1;
-    }
-    else real_write(log_fd, log_content, pre + ret);
     
     free(keyword);
 
@@ -267,6 +278,17 @@ ssize_t fake_read(int fd, void *buf, size_t count){
 
 ssize_t fake_write(int fd, const void *buf, size_t count){
     printf("\nfake_write\n");
+
+    int log_fd;
+    char filename[32];
+    sprintf(filename, "%d-%d-write.log", getpid(), fd);
+    
+    /* Log file is already existed or not */
+    if(access(filename, F_OK) == 0) log_fd = real_open(filename, O_APPEND | O_RDWR, S_IRWXU);                    
+    else log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU);
+
+    real_write(log_fd, buf, count);
+    real_close(log_fd);
 
     ssize_t ret = real_write(fd, buf, count);
     dprintf(LOGGER_FD, "[logger] write(%d, %p, %ld) = %ld\n", fd, buf, count, ret);
@@ -305,3 +327,31 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     return res;
 }
 
+int fake_close(int fd){
+    printf("\nfake_close\n");
+
+    int index = find_fd_index(fd);
+    
+    char buffer[65536];
+    ssize_t bytes = real_read(fd, &buffer, strlen(buffer) - 1);
+    fd_start[index] += bytes;
+
+    int ret = real_close(fd);
+    return ret;
+}
+
+int find_fd_index(int fd){
+    int index;
+    for(index = 0; index <= fd_len; index++){
+        if(index == fd_len){
+            fd_list[fd_len] = fd;
+            fd_start[index] = 0;
+            fd_len += 1;
+            break;
+        }
+        if(fd_list[index] == fd){
+            break;
+        }
+    }
+    return index;
+}
