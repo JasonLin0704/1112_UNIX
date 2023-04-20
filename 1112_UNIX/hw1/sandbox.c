@@ -9,10 +9,13 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <elf.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
+#include <netdb.h>
 
-#define errquit(m)	{ perror(m); _exit(-1); }
-#define max(a, b) ((a)>(b)?(a):(b))
+#define errquit(m) { perror(m); _exit(-1); }
+#define max(a, b) ((a) > (b) ? (a):(b))
 
 int __libc_start_main(int *(main) (int, char * *, char * *), int argc, char * * ubp_av, void (*init) (void), void (*fini) (void), void (*rtld_fini) (void), void (* stack_end));
 void hijack(int argc, char * * ubp_av);
@@ -20,19 +23,26 @@ int fake_open(const char *pathname, int flags, mode_t mode);
 ssize_t fake_read(int fd, void *buf, size_t count);
 ssize_t fake_write(int fd, const void *buf, size_t count);
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int fake_getaddrinfo(const char *restrict node, const char *restrict service, const struct addrinfo *restrict hints, struct addrinfo **restrict res);
+int fake_system(const char *command);
 int fake_close(int fd);
+
 int find_fd_index(int fd);
 
 typedef int (*open_ptr_t)(const char *, int, mode_t);
 typedef ssize_t (*read_ptr_t)(int, void *, size_t);
 typedef ssize_t (*write_ptr_t)(int, const void *, size_t);
 typedef int (*connect_ptr_t)(int, const struct sockaddr *, socklen_t);
+typedef int (*getaddrinfo_ptr_t)(const char *restrict, const char *restrict, const struct addrinfo *restrict, struct addrinfo **restrict);
+typedef int (*system_ptr_t)(const char *);
 typedef int (*close_ptr_t)(int);
 
 open_ptr_t real_open;
 read_ptr_t real_read;
 write_ptr_t real_write;
 connect_ptr_t real_connect;
+getaddrinfo_ptr_t real_getaddrinfo;
+system_ptr_t real_system;
 close_ptr_t real_close;
 
 int LOGGER_FD;
@@ -150,10 +160,12 @@ void hijack(int argc, char * * ubp_av){
             *(uint64_t*)addr = (uint64_t)fake_connect; 
         } 
         else if(strcmp(sym_name, "getaddrinfo") == 0){
-            continue;
+            real_getaddrinfo = (getaddrinfo_ptr_t) *(uint64_t*)addr;
+            *(uint64_t*)addr = (uint64_t)fake_getaddrinfo;
         } 
         else if(strcmp(sym_name, "system") == 0){
-            continue;
+            real_system = (system_ptr_t) *(uint64_t*)addr;
+            *(uint64_t*)addr = (uint64_t)fake_system; 
         }
         else if(strcmp(sym_name, "close") == 0){
             real_close = (close_ptr_t) *(uint64_t*)addr;
@@ -297,34 +309,67 @@ ssize_t fake_write(int fd, const void *buf, size_t count){
 
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     printf("\nfake_connect\n");
-    printf("%c\n", addr->sa_data[0]);
-    
-    // FILE *file = fopen(CONFIG, "r");
-    // if(!file) errquit("fopen config");
-    
-    // int flag = 0;
 
-    // char *contents = NULL;
-    // size_t len = 0;
-    // while (getline(&contents, &len, file) != -1){
-    //     if(strcmp(contents, "BEGIN connect-blacklist\n") == 0) flag = 1;
-    //     else if(strcmp(contents, "END connect-blacklist\n") == 0) break;
-    //     else if(flag == 1){
-    //         contents[strlen(contents) - 1] = '\0';
-    //         if(strcmp(strtok(contents, ":"), )){
-    //             flag = -1;
-    //             errno = ECONNREFUSED;
-    //             break;
-    //         }
-    //     }
-    // }
-    // fclose(file);
-    // free(contents);
-    // if(flag == -1) return -1;
+    char ip_in[INET_ADDRSTRLEN];
+    int port_in;
+    struct sockaddr_in *addr_in = (struct sockaddr_in *)addr; 
+    if(addr->sa_family == AF_INET){
+        inet_ntop(AF_INET, &(addr_in->sin_addr), ip_in, INET_ADDRSTRLEN);
+        port_in = ntohs(addr_in->sin_port);
+        printf("IP address: %s\n", ip_in);
+        printf("Port: %d\n", port_in);
+    }
+    
+    FILE *file = fopen(CONFIG, "r");
+    if(!file) errquit("fopen config");
+    
+    int flag = 0;
+
+    char *contents = NULL;
+    size_t len = 0;
+    while (getline(&contents, &len, file) != -1){
+        if(strcmp(contents, "BEGIN connect-blacklist\n") == 0) flag = 1;
+        else if(strcmp(contents, "END connect-blacklist\n") == 0) break;
+        else if(flag == 1){
+            contents[strlen(contents) - 1] = '\0';
+            char *hostname = strtok(contents, ":");
+            char *port = strtok(NULL, ":");
+            printf("%s\n", hostname);
+            printf("%s\n", port);
+
+            struct addrinfo hints, *servinfo;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+
+            if(getaddrinfo(hostname , "http" , &hints , &servinfo) != 0) errquit("resolve hostname by ip");
+            for(struct addrinfo *p = servinfo; p != NULL; p = p->ai_next){
+                struct sockaddr_in *h = (struct sockaddr_in *) p->ai_addr;
+                printf("%s\n", inet_ntoa(h->sin_addr));
+                printf("%d\n", ntohs(h->sin_port));
+            }
+            freeaddrinfo(servinfo);
+        }
+    }
+    fclose(file);
+    free(contents);
+    if(flag == -1) return -1;
 
     int res = real_connect(sockfd, addr, addrlen);
     printf("res: %d\n", res);
     return res;
+}
+
+int fake_getaddrinfo(const char *restrict node, const char *restrict service, const struct addrinfo *restrict hints, struct addrinfo **restrict res){
+    printf("\nfake_getaddrinfo\n");
+
+
+    int ret = real_getaddrinfo(node, service, hints, res);
+    return ret;
+}
+
+int fake_system(const char *command){
+    printf("\nfake_system\n");
 }
 
 int fake_close(int fd){
