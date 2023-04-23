@@ -74,8 +74,12 @@ int __libc_start_main(int *(main) (int, char * *, char * *),
 void hijack(int argc, char * * ubp_av){
     // printf("argument: %s %s\n", *ubp_av, *(ubp_av + 1));
 
-    // char command[128];
-    char command[128] = "/usr/bin/";
+    char command[128];
+    char *arg1 = *ubp_av;
+
+    if(arg1[0] != '.' || arg1[1] != '/'){
+        strcpy(command, "/usr/bin/");
+    }
     strcat(command, *ubp_av);
     // printf("command: %s\n\n", command);
     
@@ -86,7 +90,7 @@ void hijack(int argc, char * * ubp_av){
     *s = 0;
     s = buf;
     close(fd);
-    // for (int i = 0; i < 100; i++) printf("%c", buf[i]); printf("\n");
+    // for(int i = 0; i < strlen(buf); i++) printf("%c", buf[i]); printf("\n");
     
     char base_str[16];
     strncpy(base_str, buf, 12);
@@ -176,7 +180,7 @@ void hijack(int argc, char * * ubp_av){
 }
 
 int fake_open(const char *pathname, int flags, mode_t mode){
-    printf("\nfake_open\n");
+    printf("fake_open\n");
 
     FILE *file = fopen(CONFIG, "r");
     if(!file) errquit("fopen config");
@@ -220,7 +224,7 @@ int fake_open(const char *pathname, int flags, mode_t mode){
 }
 
 ssize_t fake_read(int fd, void *buf, size_t count){
-    printf("\nfake_read\n");
+    printf("fake_read\n");
 
     /* Get the keyword from config.txt */
     FILE *file = fopen(CONFIG, "r");
@@ -248,7 +252,7 @@ ssize_t fake_read(int fd, void *buf, size_t count){
     
     /* Log file is already existed */
     if(access(filename, F_OK) == 0){
-        log_fd = real_open(filename, O_APPEND | O_RDWR, S_IRWXU);
+        log_fd = real_open(filename, O_APPEND | O_RDWR, 0);
 
         /* Combine with previous content from log file */
         int index = find_fd_index(log_fd);
@@ -278,7 +282,8 @@ ssize_t fake_read(int fd, void *buf, size_t count){
             ret = -1;
         }
         else{
-            log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU);
+            /* Create the log file after we check */
+            log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU | S_IRWXG | S_IRWXO);
             real_write(log_fd, log_content, ret);
             real_close(log_fd);
         }
@@ -291,16 +296,20 @@ ssize_t fake_read(int fd, void *buf, size_t count){
 }
 
 ssize_t fake_write(int fd, const void *buf, size_t count){
-    printf("\nfake_write\n");
+    printf("fake_write\n");
 
     int log_fd;
     char filename[32];
     sprintf(filename, "%d-%d-write.log", getpid(), fd);
     
     /* Log file is already existed or not */
-    if(access(filename, F_OK) == 0) log_fd = real_open(filename, O_APPEND | O_RDWR, S_IRWXU);                    
-    else log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU);
-
+    if(access(filename, F_OK) == 0){
+        log_fd = real_open(filename, O_APPEND | O_RDWR, 0);
+    }
+    else{
+        log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU | S_IRWXG | S_IRWXO);
+        printf("%s %d\n", filename, log_fd);
+    }
     real_write(log_fd, buf, count);
     real_close(log_fd);
 
@@ -310,15 +319,16 @@ ssize_t fake_write(int fd, const void *buf, size_t count){
 }
 
 int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
-    printf("\nfake_connect\n");
+    printf("fake_connect\n");
 
+    /*  */
     char ip_in[INET_ADDRSTRLEN];
     int port_in;
     struct sockaddr_in *addr_in = (struct sockaddr_in *)addr; 
     if(addr->sa_family == AF_INET){
         inet_ntop(AF_INET, &(addr_in->sin_addr), ip_in, INET_ADDRSTRLEN);
         port_in = ntohs(addr_in->sin_port);
-        printf("addr_in: %s:%d\n", ip_in, port_in);
+        // printf("addr_in: %s:%d\n", ip_in, port_in);
     }
     
     /* Get the blacklist from config.txt */
@@ -337,17 +347,17 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
             char *hostname = strtok(contents, ":");
             int port = atoi(strtok(NULL, ":"));
 
+            /* Resolve ip list from the hostname */
             struct addrinfo hints, *servinfo;
             memset(&hints, 0, sizeof(hints));
             hints.ai_family = AF_INET;
             hints.ai_socktype = SOCK_STREAM;
-
             if(getaddrinfo(hostname , "http" , &hints , &servinfo) != 0) errquit("resolve hostname by ip");
             for(struct addrinfo *p = servinfo; p != NULL; p = p->ai_next){
                 struct sockaddr_in *h = (struct sockaddr_in *) p->ai_addr;
                 char ip[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &(h->sin_addr), ip, INET_ADDRSTRLEN);
-                printf("addr: %s:%d\n", ip, port);
+                // printf("addr: %s:%d\n", ip, port);
                 if(strcmp(ip_in, ip) == 0 && port_in == port){
                     flag = -1;
                     errno = ECONNREFUSED;
@@ -360,7 +370,7 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
     }
     fclose(file);
     free(contents);
-
+    
     int ret = real_connect(sockfd, addr, addrlen);
     if(flag == -1) ret = -1;
     dprintf(LOGGER_FD, "[logger] connect(%d, \"%s\", %d) = %d\n", sockfd, ip_in, addrlen, ret);
@@ -368,26 +378,61 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
 }
 
 int fake_getaddrinfo(const char *restrict node, const char *restrict service, const struct addrinfo *restrict hints, struct addrinfo **restrict res){
-    printf("\nfake_getaddrinfo\n");
+    printf("fake_getaddrinfo\n");
+    // printf("%s\n", node);
     
+    /* Get the blacklist from config.txt */
+    FILE *file = fopen(CONFIG, "r");
+    if(!file) errquit("fopen config");
 
+    int flag = 0;
+
+    char *contents = NULL;
+    size_t len = 0;
+    while (getline(&contents, &len, file) != -1){
+        if(strcmp(contents, "BEGIN getaddrinfo-blacklist\n") == 0) flag = 1;
+        else if(strcmp(contents, "END getaddrinfo-blacklist\n") == 0) break;
+        else if(flag == 1){
+            contents[strlen(contents) - 1] = '\0';
+            if(strcmp(contents, node) == 0){
+                flag = -1;
+                break;
+            }
+        }
+    }
+    fclose(file);
+    free(contents);
+    
     int ret = real_getaddrinfo(node, service, hints, res);
+    if(flag == -1) ret = EAI_NONAME;
+    dprintf(LOGGER_FD, "[logger] getaddrinfo(\"%s\", \"%s\", %p, %p) = %d\n", node, service, hints, res, ret);
     return ret;
 }
 
 int fake_system(const char *command){
-    printf("\nfake_system\n");
+    printf("fake_system\n");
+
+    dprintf(LOGGER_FD, "[logger] system(\"%s\")\n", command);
+    real_system(command);
+    return 0;
 }
 
 int fake_close(int fd){
-    printf("\nfake_close\n");
+    printf("fake_close\n");
+
+    int old_errno = errno;
 
     int index = find_fd_index(fd);
-    
-    char buffer[65536];
-    ssize_t bytes = real_read(fd, &buffer, strlen(buffer) - 1);
-    fd_start[index] += bytes;
 
+    char buffer[65536];
+    lseek(fd, 0, SEEK_SET);
+    if(errno != ESPIPE){
+        ssize_t bytes = real_read(fd, &buffer, strlen(buffer) - 1);
+        fd_start[index] += bytes;
+    }
+    else{
+        errno = old_errno;
+    }
     int ret = real_close(fd);
     return ret;
 }
