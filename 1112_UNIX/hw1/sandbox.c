@@ -47,6 +47,7 @@ close_ptr_t real_close;
 
 int LOGGER_FD;
 char *CONFIG;
+char *PRELOAD;
 
 int fd_len = 0;
 int fd_list[10000];
@@ -64,6 +65,7 @@ int __libc_start_main(int *(main) (int, char * *, char * *),
     printf("pid: %d\n", getpid());
     LOGGER_FD = atoi(getenv("LOGGER_FD"));
     CONFIG = getenv("SANDBOX_CONFIG");
+    PRELOAD = getenv("LD_PRELOAD");
 
     hijack(argc, ubp_av);
 
@@ -74,15 +76,7 @@ int __libc_start_main(int *(main) (int, char * *, char * *),
 void hijack(int argc, char * * ubp_av){
     // printf("argument: %s %s\n", *ubp_av, *(ubp_av + 1));
 
-    char command[128];
-    char *arg1 = *ubp_av;
-
-    if(arg1[0] != '.' || arg1[1] != '/'){
-        strcpy(command, "/usr/bin/");
-    }
-    strcat(command, *ubp_av);
-    // printf("command: %s\n\n", command);
-    
+    /* Get the base address */
     int fd, sz;
     char buf[16384], *s = buf;
     if((fd = open("/proc/self/maps", O_RDONLY)) < 0) errquit("open /proc/self/maps");
@@ -96,10 +90,22 @@ void hijack(int argc, char * * ubp_av){
     strncpy(base_str, buf, 12);
     unsigned long int base = strtol(base_str, NULL, 16);
     // printf("base: %lx\n\n", base);
+
+    /* Determine which binary executive are going to be used */
+    char command[128];
+    char *arg1 = *ubp_av;
+
+    if(arg1[0] != '.' || arg1[1] != '/'){
+        strcpy(command, "/usr/bin/");
+    }
+    strcat(command, *ubp_av);
+    // printf("command: %s\n\n", command);
     
     FILE* file = fopen(command, "rb");
     if(!file) errquit("fopen command");
 
+
+    /* ELF header information */
     Elf64_Ehdr ehdr;
     fread(&ehdr, sizeof(Elf64_Ehdr), 1, file);
     // printf("%lx %u %u %u\n", ehdr.e_shoff, ehdr.e_shnum, ehdr.e_shentsize, ehdr.e_shstrndx);
@@ -125,6 +131,7 @@ void hijack(int argc, char * * ubp_av){
         if(strcmp(name, ".dynstr") == 0) shdr_dynstr = shdr;
     }
 
+    printf("hijack: ");
     for (int i = 0; i < shdr_rela_plt.sh_size / shdr_rela_plt.sh_entsize; i++) {
         Elf64_Rela rela;
         fseek(file, shdr_rela_plt.sh_offset + i * shdr_rela_plt.sh_entsize, SEEK_SET);
@@ -142,6 +149,7 @@ void hijack(int argc, char * * ubp_av){
         fread(sym_name, sizeof(char), 32, file);
         //printf("0x%lx %u %s\n", offset, sym_idx, sym_name);
 
+        // base = 0;
         uint64_t addr = base + offset;
         int PageSize = sysconf(_SC_PAGE_SIZE);
         void *a = (void *)(addr & ~(PageSize - 1));
@@ -150,32 +158,40 @@ void hijack(int argc, char * * ubp_av){
         if(strcmp(sym_name, "open") == 0){
             real_open = (open_ptr_t) *(uint64_t*)addr; /* set original open to "real_open" */
             *(uint64_t*)addr = (uint64_t)fake_open;    /* modify got value into the address of "fake_open" */
+            printf("open / ");
         } 
         else if(strcmp(sym_name, "read") == 0){
             real_read = (read_ptr_t) *(uint64_t*)addr;
-            *(uint64_t*)addr = (uint64_t)fake_read; 
+            *(uint64_t*)addr = (uint64_t)fake_read;
+            printf("read / ");
         } 
         else if(strcmp(sym_name, "write") == 0){
             real_write = (write_ptr_t) *(uint64_t*)addr;
             *(uint64_t*)addr = (uint64_t)fake_write; 
+            printf("write / ");
         } 
         else if(strcmp(sym_name, "connect") == 0){
             real_connect = (connect_ptr_t) *(uint64_t*)addr;
-            *(uint64_t*)addr = (uint64_t)fake_connect; 
+            *(uint64_t*)addr = (uint64_t)fake_connect;
+            printf("connect / ");
         } 
         else if(strcmp(sym_name, "getaddrinfo") == 0){
             real_getaddrinfo = (getaddrinfo_ptr_t) *(uint64_t*)addr;
             *(uint64_t*)addr = (uint64_t)fake_getaddrinfo;
+            printf("getaddrinfo / ");
         } 
         else if(strcmp(sym_name, "system") == 0){
             real_system = (system_ptr_t) *(uint64_t*)addr;
-            *(uint64_t*)addr = (uint64_t)fake_system; 
+            *(uint64_t*)addr = (uint64_t)fake_system;
+            printf("system / ");
         }
         else if(strcmp(sym_name, "close") == 0){
             real_close = (close_ptr_t) *(uint64_t*)addr;
-            *(uint64_t*)addr = (uint64_t)fake_close; 
+            *(uint64_t*)addr = (uint64_t)fake_close;
+            printf("close / ");
         }
     }
+    printf("\n-------------------------------------------------------\n");
     fclose(file);
 }
 
@@ -215,10 +231,10 @@ int fake_open(const char *pathname, int flags, mode_t mode){
     }
     fclose(file);
     free(contents);
-    if(flag == -1) return -1; 
 
     if(~(flags & O_CREAT || flags & __O_TMPFILE)) mode = 0;
-    int ret = real_open(pathname, flags, mode);
+
+    int ret = (flag == -1) ? -1 : real_open(pathname, flags, mode);
     dprintf(LOGGER_FD, "[logger] open(\"%s\", %d, %u) = %d\n", pathname, flags, mode, ret);
     return ret;
 }
@@ -243,6 +259,7 @@ ssize_t fake_read(int fd, void *buf, size_t count){
     fclose(file);
     
     
+    FILE *log_file;
     int log_fd;
     char log_content[65536];
     char filename[32];
@@ -252,7 +269,8 @@ ssize_t fake_read(int fd, void *buf, size_t count){
     
     /* Log file is already existed */
     if(access(filename, F_OK) == 0){
-        log_fd = real_open(filename, O_APPEND | O_RDWR, 0);
+        log_file = fopen(filename, "a+");
+        log_fd = fileno(log_file);
 
         /* Combine with previous content from log file */
         int index = find_fd_index(log_fd);
@@ -283,7 +301,8 @@ ssize_t fake_read(int fd, void *buf, size_t count){
         }
         else{
             /* Create the log file after we check */
-            log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU | S_IRWXG | S_IRWXO);
+            log_file = fopen(filename, "a+");
+            log_fd = fileno(log_file);
             real_write(log_fd, log_content, ret);
             real_close(log_fd);
         }
@@ -298,18 +317,11 @@ ssize_t fake_read(int fd, void *buf, size_t count){
 ssize_t fake_write(int fd, const void *buf, size_t count){
     printf("fake_write\n");
 
-    int log_fd;
     char filename[32];
     sprintf(filename, "%d-%d-write.log", getpid(), fd);
-    
-    /* Log file is already existed or not */
-    if(access(filename, F_OK) == 0){
-        log_fd = real_open(filename, O_APPEND | O_RDWR, 0);
-    }
-    else{
-        log_fd = real_open(filename, O_CREAT | O_RDWR, S_IRWXU | S_IRWXG | S_IRWXO);
-        printf("%s %d\n", filename, log_fd);
-    }
+    FILE *log_file = fopen(filename, "a+");
+    int log_fd = fileno(log_file);
+
     real_write(log_fd, buf, count);
     real_close(log_fd);
 
@@ -347,7 +359,7 @@ int fake_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen){
             char *hostname = strtok(contents, ":");
             int port = atoi(strtok(NULL, ":"));
 
-            /* Resolve ip list from the hostname */
+            /* Resolve ips from the hostname and do comparision */
             struct addrinfo hints, *servinfo;
             memset(&hints, 0, sizeof(hints));
             hints.ai_family = AF_INET;
@@ -413,7 +425,17 @@ int fake_system(const char *command){
     printf("fake_system\n");
 
     dprintf(LOGGER_FD, "[logger] system(\"%s\")\n", command);
+    
+    // unsetenv("LD_PRELOAD");
+    
     real_system(command);
+
+    // char new_command[128];
+    // sprintf(new_command, "LD_PRELOAD=%s SANDBOX_CONFIG=%s LOGGER_FD=%d %s", PRELOAD, CONFIG, LOGGER_FD, command);
+    // real_system(new_command);
+
+    // setenv("LD_PRELOAD", PRELOAD, 1);
+
     return 0;
 }
 

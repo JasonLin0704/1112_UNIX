@@ -14,12 +14,13 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+typedef int (*open_ptr_t)(const char *, int, mode_t);
+
+open_ptr_t real_open;
+
 int main(){
+    system("cat /etc/hosts");
     // system("readelf -r /usr/bin/cat");
-
-    char filename[20] = "aaa";
-    int log_fd = open(filename, O_CREAT | O_RDWR, S_IRWXU | S_IRWXG | S_IRWXO);
-
 
     return 0;
 }
