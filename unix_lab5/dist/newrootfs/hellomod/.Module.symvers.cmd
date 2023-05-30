@@ -1,1 +1,0 @@
-cmd_/home/sense/Downloads/lab5/hellomod/Module.symvers :=  scripts/mod/modpost       -o /home/sense/Downloads/lab5/hellomod/Module.symvers -T /home/sense/Downloads/lab5/hellomod/modules.order -i Module.symvers -e 

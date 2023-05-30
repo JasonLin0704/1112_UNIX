@@ -1,1 +1,0 @@
-cmd_/home/sense/Downloads/lab5/hellomod/hellomod.ko := ld -r -m elf_x86_64 -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/sense/Downloads/lab5/hellomod/hellomod.ko /home/sense/Downloads/lab5/hellomod/hellomod.o /home/sense/Downloads/lab5/hellomod/hellomod.mod.o;  true
