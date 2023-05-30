@@ -1,0 +1,1 @@
+cmd_/home/jason/unix/data/home/lab5/kshram/kshram.ko := ld -r  -m elf_x86_64 -z noexecstack   --build-id=sha1  -T scripts/module.lds -o /home/jason/unix/data/home/lab5/kshram/kshram.ko /home/jason/unix/data/home/lab5/kshram/kshram.o /home/jason/unix/data/home/lab5/kshram/kshram.mod.o;  true
