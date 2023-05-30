@@ -1,0 +1,1 @@
+cmd_/home/huangant/myprog/unix_prog/labs/lab_kernelmodule/linux-6.2.6/tools/objtool/fixdep-in.o :=  ld -r -o /home/huangant/myprog/unix_prog/labs/lab_kernelmodule/linux-6.2.6/tools/objtool/fixdep-in.o  /home/huangant/myprog/unix_prog/labs/lab_kernelmodule/linux-6.2.6/tools/objtool/fixdep.o
