@@ -28,7 +28,7 @@ int main(int argc, char *argv[]) {
         int cc = 0, num = 0;
         unsigned long magic_pos;
         long ret1, ret2;
-        char *c1, *c2;
+        char c1[11], c2[11];
         struct user_regs_struct regs, restart_regs;
 		if(waitpid(child, &status, 0) < 0) errquit("waitpid");
 		ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_EXITKILL);
@@ -56,10 +56,10 @@ int main(int argc, char *argv[]) {
             if(cc == 5 && regs.rax != 0){
                 num += 1;
                 
-                ret1 = ptrace(PTRACE_PEEKTEXT, child, magic_pos, NULL);
-                ret2 = ptrace(PTRACE_PEEKTEXT, child, magic_pos + 8, NULL);
-                c1 = (char *)&ret1;
-                c2 = (char *)&ret2;
+                // ret1 = ptrace(PTRACE_PEEKTEXT, child, magic_pos, NULL);
+                // ret2 = ptrace(PTRACE_PEEKTEXT, child, magic_pos + 8, NULL);
+                // c1 = (char *)&ret1;
+                // c2 = (char *)&ret2;
                 
                 // for(int i = 0; i < 8; i++) printf("%c", c1[i]); printf(" ");
                 // for(int i = 0; i < 8; i++) printf("%c", c2[i]); printf("\n");
