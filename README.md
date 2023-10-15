@@ -1,5 +1,5 @@
 # 1112 UNIX Programming in NYCU
-> Just share!
+> Just share! \
 > I can't guarantee either the correctness or the completeness of all materials, only providing ideas for those needed. \
 > Also, references are welcome, but mindless copying is strongly discouraged.
 
