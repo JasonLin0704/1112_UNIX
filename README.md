@@ -1,8 +1,8 @@
 # 1112 UNIX Programming in NYCU
-> Just share! \
-> I can't guarantee either the correctness or the completeness of all materials, only providing ideas for those needed. \
-> Also, references are welcome, but mindless copying is strongly discouraged.
 
+> Just share my own solutions! If there is any secret/infringement about the course, please inform me. \
+> Also, I can't guarantee the absolute correctness or completeness of all materials, only providing ideas for those needed. \
+> Last but not least, the content is for reference only. Mindless copying is not encouraged.
 
 UP111 Labs
 ===========
